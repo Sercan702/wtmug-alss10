@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ALŞ08 — Mobil</title>
+<meta name="theme-color" content="#6366f1" />
+<link rel="manifest" href="../manifest.json" />
+<link rel="stylesheet" href="../css/style.css" />
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <a class="btn" href="../index.html">← Ana Ekran</a>
+    <div class="brand">ALŞ08 · Mobil</div>
+    <div class="spacer"></div>
+    <span class="status-dot wait" id="dot"></span>
+    <span style="font-size:.8rem;color:var(--muted)" id="state">bekleniyor</span>
+  </div>
+
+  <div id="scanCard" class="card">
+    <h2>📷 Bilgisayardaki QR'ı okut</h2>
+    <p style="color:var(--muted);margin-top:0">Kamerayı aç, bilgisayar ekranındaki QR'a tut.</p>
+    <div id="qrReader"></div>
+    <button class="btn primary" id="startScan">Kamerayı Aç</button>
+  </div>
+
+  <div id="chatCard" class="card hidden">
+    <h2>💬 Sohbet</h2>
+    <div class="msg-list" id="messages"></div>
+    <div class="chat-input">
+      <input type="text" id="msgInput" placeholder="Mesaj yaz…" autocomplete="off" />
+      <button class="btn primary" id="sendBtn">Gönder</button>
+      <button class="btn" id="fileBtn">📎</button>
+      <input type="file" id="fileInput" class="hidden" />
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { CHUNK_SIZE, toast, randomId, fmtBytes, setProgress } from '../js/common.js';
+
+const dot = document.getElementById('dot');
+const stateEl = document.getElementById('state');
+const scanCard = document.getElementById('scanCard');
+const chatCard = document.getElementById('chatCard');
+const msgList = document.getElementById('messages');
+const msgInput = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+const fileBtn = document.getElementById('fileBtn');
+const fileInput = document.getElementById('fileInput');
+const startScan = document.getElementById('startScan');
+
+const peer = new Peer(randomId('mob-'), { debug: 1 });
+let conn = null;
+let scanner = null;
+
+startScan.onclick = async () => {
+  try {
+    scanner = new Html5Qrcode('qrReader');
+    await scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      text => {
+        scanner.stop().catch(() => {});
+        document.getElementById('qrReader').innerHTML = '';
+        connectTo(text.trim());
+      }
+    );
+  } catch (e) { toast('Kamera açılamadı: ' + e.message); }
+};
+
+function connectTo(remoteId) {
+  stateEl.textContent = 'bağlanılıyor…';
+  conn = peer.connect(remoteId);
+  conn.on('open', () => {
+    dot.className = 'status-dot on';
+    stateEl.textContent = 'bağlı';
+    scanCard.classList.add('hidden');
+    chatCard.classList.remove('hidden');
+    addSys('Bağlantı kuruldu.');
+    bindConn(conn);
+  });
+  conn.on('error', () => toast('Bağlantı hatası'));
+}
+
+function bindConn(c) {
+  c.on('data', d => {
+    if (typeof d === 'string') {
+      try { const m = JSON.parse(d); handleProtocol(m); return; } catch (e) {}
+      addMsg(d, 'them'); return;
+    }
+    if (d instanceof ArrayBuffer) handleChunk(d);
+  });
+  c.on('close', () => addSys('Bağlantı kapandı.'));
+}
+
+const incoming = new Map();
+
+function handleProtocol(m) {
+  if (m.t === 'file-start') {
+    incoming.set(m.id, {
+      name: m.name, type: m.type, size: m.size, chunks: [], received: 0,
+      el: addFileMsg(m.name, m.size, 'them')
+    });
+  } else if (m.t === 'file-end') {
+    const f = incoming.get(m.id);
+    if (!f) return;
+    const blob = new Blob(f.chunks, { type: f.type || 'application/octet-stream' });
+    f.el.finish(blob, f.name);
+    incoming.delete(m.id);
+  }
+}
+
+function handleChunk(buf) {
+  const view = new DataView(buf);
+  const idLen = view.getUint16(0);
+  const idBytes = new Uint8Array(buf, 2, idLen);
+  const id = new TextDecoder().decode(idBytes);
+  const f = incoming.get(id);
+  if (!f) return;
+  const data = buf.slice(2 + idLen);
+  f.chunks.push(data);
+  f.received += data.byteLength;
+  f.el.update(f.received / f.size);
+}
+
+function sendFile(file) {
+  if (!conn || !conn.open) return toast('Bağlantı yok');
+  const id = randomId('f-');
+  const el = addFileMsg(file.name, file.size, 'me');
+  conn.send(JSON.stringify({ t: 'file-start', id, name: file.name, type: file.type, size: file.size }));
+
+  const reader = new FileReader();
+  let offset = 0;
+
+  reader.onload = e => {
+    const buf = e.target.result;
+    const idBytes = new TextEncoder().encode(id);
+    const payload = new Uint8Array(2 + idBytes.length + buf.byteLength);
+    new DataView(payload.buffer).setUint16(0, idBytes.length);
+    payload.set(idBytes, 2);
+    payload.set(new Uint8Array(buf), 2 + idBytes.length);
+    conn.send(payload.buffer);
+    offset += buf.byteLength;
+    el.update(offset / file.size);
+    if (offset < file.size) readNext();
+    else { conn.send(JSON.stringify({ t: 'file-end', id })); el.done(); }
+  };
+
+  function readNext() {
+    const slice = file.slice(offset, offset + CHUNK_SIZE);
+    reader.readAsArrayBuffer(slice);
+  }
+  readNext();
+}
+
+function addMsg(text, who) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.textContent = text;
+  msgList.appendChild(d);
+  msgList.scrollTop = msgList.scrollHeight;
+}
+
+function addSys(text) {
+  const d = document.createElement('div');
+  d.className = 'msg sys';
+  d.textContent = text;
+  msgList.appendChild(d);
+  msgList.scrollTop = msgList.scrollHeight;
+}
+
+function addFileMsg(name, size, who) {
+  const wrap = document.createElement('div');
+  wrap.className = 'file-msg ' + who;
+  wrap.innerHTML =
+    '<div class="meta"><span>' + (who === 'me' ? 'Gönderiliyor' : 'Alınıyor') + '</span><span>' + fmtBytes(size) + '</span></div>' +
+    '<div class="name">' + name + '</div>' +
+    '<div class="progress"><span></span></div>' +
+    '<div class="meta"><span class="pct">0%</span><span class="status"></span></div>';
+  msgList.appendChild(wrap);
+  msgList.scrollTop = msgList.scrollHeight;
+  const bar = wrap.querySelector('.progress > span');
+  const pct = wrap.querySelector('.pct');
+  return {
+    update(r) { const p = Math.round(r * 100); setProgress(bar, p); pct.textContent = p + '%'; },
+    done() { wrap.querySelector('.status').textContent = who === 'me' ? 'gönderildi ✓' : 'tamamlandı'; },
+    finish(blob, fname) {
+      this.done();
+      const url = URL.createObjectURL(blob);
+      const holder = document.createElement('div');
+      if (/^image\//.test(blob.type)) {
+        const img = document.createElement('img'); img.src = url; holder.appendChild(img);
+      } else if (/^video\//.test(blob.type)) {
+        const v = document.createElement('video'); v.src = url; v.controls = true; holder.appendChild(v);
+      }
+      const a = document.createElement('a');
+      a.href = url; a.download = fname; a.className = 'btn success'; a.textContent = '⬇ İndir';
+      holder.appendChild(a);
+      wrap.appendChild(holder);
+    }
+  };
+}
+
+sendBtn.onclick = () => {
+  const t = msgInput.value.trim();
+  if (!t) return;
+  if (!conn || !conn.open) return toast('Bağlantı yok');
+  conn.send(t); addMsg(t, 'me'); msgInput.value = '';
+};
+msgInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
+fileBtn.onclick = () => fileInput.click();
+fileInput.onchange = e => { const f = e.target.files[0]; if (f) sendFile(f); fileInput.value = ''; };
+</script>
+</body>
+</html>

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ALŞ09 — Toplu Dağıtım</title>
+<meta name="theme-color" content="#6366f1" />
+<link rel="manifest" href="../manifest.json" />
+<link rel="stylesheet" href="../css/style.css" />
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <a class="btn" href="../index.html">← Ana Ekran</a>
+    <div class="brand">ALŞ09 · Toplu Dağıtım</div>
+    <div class="spacer"></div>
+    <span class="status-dot" id="dot"></span>
+    <span style="font-size:.8rem;color:var(--muted)" id="state">rol seç</span>
+  </div>
+
+  <div id="roleCard" class="card">
+    <h2>Rolünü seç</h2>
+    <div class="role-select">
+      <button class="menu-tile" id="pickTeacher">
+        <span class="emoji">👨‍🏫</span>
+        <h3>Hoca</h3>
+        <p>Dosya seç, QR göster, öğrencilere otomatik gönder.</p>
+      </button>
+      <button class="menu-tile" id="pickStudent">
+        <span class="emoji">🎓</span>
+        <h3>Öğrenci</h3>
+        <p>Hocanın ID'sini gir veya QR'ı okut, dosyayı al.</p>
+      </button>
+    </div>
+  </div>
+
+  <div id="teacherCard" class="card hidden">
+    <h2>👨‍🏫 Hoca Modu</h2>
+
+    <div id="teacherSetup">
+      <label style="display:block;margin:10px 0 6px;color:var(--muted);font-size:.85rem">Gönderilecek dosya</label>
+      <input type="file" id="teacherFile" />
+      <button class="btn primary" id="teacherStart" style="margin-top:12px">Paylaşımı Başlat</button>
+    </div>
+
+    <div id="teacherShare" class="hidden" style="margin-top:16px">
+      <div class="qr-box">
+        <canvas id="teacherQr"></canvas>
+        <div>Bağlantı ID: <span class="id-chip" id="teacherId">…</span></div>
+        <div style="font-size:.8rem;color:#0f172a">Öğrenciler bağlandıkça kaybolmaz</div>
+      </div>
+      <h3 style="margin-top:16px">📊 Gönderim Günlüğü</h3>
+      <div class="log" id="teacherLog"></div>
+    </div>
+  </div>
+
+  <div id="studentCard" class="card hidden">
+    <h2>🎓 Öğrenci Modu</h2>
+
+    <div id="studentConnect">
+      <label style="display:block;margin:10px 0 6px;color:var(--muted);font-size:.85rem">Hocanın ID'si</label>
+      <input type="text" id="teacherIdInput" placeholder="örn: hoca-ab12cd34" />
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary grow" id="studentConnectBtn">Bağlan</button>
+        <button class="btn hidden" id="studentScanBtn">📷 QR Okut</button>
+      </div>
+      <div id="studentQrReader" style="margin-top:12px"></div>
+    </div>
+
+    <div id="studentReceive" class="hidden" style="margin-top:16px">
+      <div class="msg-list" id="studentMessages"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { CHUNK_SIZE, toast, randomId, fmtBytes, setProgress, isMobileDevice, logLine } from '../js/common.js';
+
+const dot = document.getElementById('dot');
+const stateEl = document.getElementById('state');
+
+const roleCard = document.getElementById('roleCard');
+const teacherCard = document.getElementById('teacherCard');
+const studentCard = document.getElementById('studentCard');
+
+const teacherSetup = document.getElementById('teacherSetup');
+const teacherShare = document.getElementById('teacherShare');
+const teacherFile = document.getElementById('teacherFile');
+const teacherStart = document.getElementById('teacherStart');
+const teacherQr = document.getElementById('teacherQr');
+const teacherIdEl = document.getElementById('teacherId');
+const teacherLog = document.getElementById('teacherLog');
+
+const teacherIdInput = document.getElementById('teacherIdInput');
+const studentConnectBtn = document.getElementById('studentConnectBtn');
+const studentScanBtn = document.getElementById('studentScanBtn');
+const studentQrReader = document.getElementById('studentQrReader');
+const studentMessages = document.getElementById('studentMessages');
+
+document.getElementById('pickTeacher').onclick = () => showRole('teacher');
+document.getElementById('pickStudent').onclick = () => showRole('student');
+
+function showRole(role) {
+  roleCard.classList.add('hidden');
+  if (role === 'teacher') {
+    teacherCard.classList.remove('hidden');
+    stateEl.textContent = 'hoca';
+    startTeacher();
+  } else {
+    studentCard.classList.remove('hidden');
+    stateEl.textContent = 'öğrenci';
+    startStudent();
+  }
+}
+
+let teacherPeer = null;
+let teacherFileObj = null;
+let teacherConnections = new Map();
+
+function drawTeacherQR(id) {
+  if (typeof QRCode === 'undefined') {
+    toast('QR kütüphanesi yüklenemedi, internet bağlantını kontrol et');
+    return;
+  }
+  QRCode.toCanvas(teacherQr, id, { width: 260, margin: 1, color: { dark: '#0f172a', light: '#ffffff' } }, err => {
+    if (err) { console.error(err); toast('QR oluşturulamadı'); }
+  });
+}
+
+function startTeacher() {
+  teacherPeer = new Peer(randomId('hoca-'), { debug: 1 });
+
+  teacherPeer.on('open', id => {
+    teacherIdEl.textContent = id;
+    drawTeacherQR(id);
+  });
+
+  teacherPeer.on('connection', conn => {
+    teacherConnections.set(conn.peer, { conn, sent: 0, total: 0, done: false });
+    logLine(teacherLog, '✓ Öğrenci bağlandı: ' + conn.peer, 'ok');
+    dot.className = 'status-dot on';
+    if (teacherFileObj) sendToStudent(conn, teacherFileObj);
+  });
+
+  teacherPeer.on('error', e => {
+    logLine(teacherLog, 'Hata: ' + e.type, 'err');
+    toast('PeerJS hatası: ' + e.type);
+  });
+}
+
+teacherStart.onclick = () => {
+  const f = teacherFile.files[0];
+  if (!f) return toast('Önce dosya seç');
+  teacherFileObj = f;
+  teacherSetup.classList.add('hidden');
+  teacherShare.classList.remove('hidden');
+  logLine(teacherLog, '📁 Dosya hazır: ' + f.name + ' (' + fmtBytes(f.size) + ')');
+};
+
+function sendToStudent(conn, file) {
+  const id = randomId('f-');
+  const total = file.size;
+  conn.send(JSON.stringify({ t: 'file-start', id, name: file.name, type: file.type, size: total }));
+
+  const rec = teacherConnections.get(conn.peer);
+  rec.total = total;
+
+  const reader = new FileReader();
+  let offset = 0;
+
+  reader.onload = e => {
+    const buf = e.target.result;
+    const idBytes = new TextEncoder().encode(id);
+    const payload = new Uint8Array(2 + idBytes.length + buf.byteLength);
+    new DataView(payload.buffer).setUint16(0, idBytes.length);
+    payload.set(idBytes, 2);
+    payload.set(new Uint8Array(buf), 2 + idBytes.length);
+    try { conn.send(payload.buffer); }
+    catch (err) { logLine(teacherLog, 'Gönderim hatası: ' + conn.peer, 'err'); return; }
+
+    offset += buf.byteLength;
+    rec.sent = offset;
+    const pct = Math.round(offset / total * 100);
+    updateLog(conn.peer, pct);
+    if (offset < total) readNext();
+    else {
+      conn.send(JSON.stringify({ t: 'file-end', id }));
+      rec.done = true;
+      logLine(teacherLog, '✓ ' + conn.peer + ' → tamamlandı (100%)', 'ok');
+    }
+  };
+
+  function readNext() {
+    const slice = file.slice(offset, offset + CHUNK_SIZE);
+    reader.readAsArrayBuffer(slice);
+  }
+  readNext();
+}
+
+function updateLog(peerId, pct) {
+  let el = teacherLog.querySelector('[data-peer="' + peerId + '"]');
+  if (!el) {
+    el = document.createElement('div');
+    el.dataset.peer = peerId;
+    teacherLog.appendChild(el);
+  }
+  el.textContent = '→ ' + peerId + ': %' + pct;
+  teacherLog.scrollTop = teacherLog.scrollHeight;
+}
+
+let studentPeer = null;
+let studentConn = null;
+
+function startStudent() {
+  studentPeer = new Peer(randomId('ogr-'), { debug: 1 });
+
+    // Butonu her zaman göster — kamera izni olmayan cihazlarda tıklanınca uyarı verir
+  studentScanBtn.classList.remove('hidden');
+  studentScanBtn.onclick = openStudentScanner;
+
+  studentConnectBtn.onclick = () => {
+    const id = teacherIdInput.value.trim();
+    if (!id) return toast("Hocanın ID'sini gir");
+    connectToTeacher(id);
+  };
+}
+
+function connectToTeacher(id) {
+  stateEl.textContent = 'bağlanılıyor…';
+  studentConn = studentPeer.connect(id);
+
+  const incoming = new Map();
+
+  studentConn.on('open', () => {
+    dot.className = 'status-dot on';
+    stateEl.textContent = 'bağlı';
+    document.getElementById('studentConnect').classList.add('hidden');
+    document.getElementById('studentReceive').classList.remove('hidden');
+    addStudentSys('Hocaya bağlandı, dosya bekleniyor…');
+  });
+
+  studentConn.on('data', d => {
+    if (typeof d === 'string') {
+      try {
+        const m = JSON.parse(d);
+        if (m.t === 'file-start') {
+          incoming.set(m.id, {
+            name: m.name, type: m.type, size: m.size, chunks: [], received: 0,
+            el: addStudentFile(m.name, m.size)
+          });
+          addStudentSys('📥 Dosya alınıyor: ' + m.name);
+        } else if (m.t === 'file-end') {
+          const f = incoming.get(m.id);
+          if (!f) return;
+          const blob = new Blob(f.chunks, { type: f.type || 'application/octet-stream' });
+          f.el.finish(blob, f.name);
+          incoming.delete(m.id);
+        }
+        return;
+      } catch (e) {}
+    }
+    if (d instanceof ArrayBuffer) {
+      const view = new DataView(d);
+      const idLen = view.getUint16(0);
+      const idBytes = new Uint8Array(d, 2, idLen);
+      const id = new TextDecoder().decode(idBytes);
+      const f = incoming.get(id);
+      if (!f) return;
+      const data = d.slice(2 + idLen);
+      f.chunks.push(data);
+      f.received += data.byteLength;
+      f.el.update(f.received / f.size);
+    }
+  });
+}
+
+function openStudentScanner() {
+  const scanner = new Html5Qrcode('studentQrReader');
+  scanner.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 250, height: 250 } },
+    text => {
+      scanner.stop().catch(() => {});
+      studentQrReader.innerHTML = '';
+      teacherIdInput.value = text.trim();
+      connectToTeacher(text.trim());
+    }
+  ).catch(e => toast('Kamera hatası: ' + e.message));
+}
+
+function addStudentSys(text) {
+  const d = document.createElement('div');
+  d.className = 'msg sys';
+  d.textContent = text;
+  studentMessages.appendChild(d);
+  studentMessages.scrollTop = studentMessages.scrollHeight;
+}
+
+function addStudentFile(name, size) {
+  const wrap = document.createElement('div');
+  wrap.className = 'file-msg';
+  wrap.innerHTML =
+    '<div class="meta"><span>Alınıyor</span><span>' + fmtBytes(size) + '</span></div>' +
+    '<div class="name">' + name + '</div>' +
+    '<div class="progress"><span></span></div>' +
+    '<div class="meta"><span class="pct">0%</span><span class="status"></span></div>';
+  studentMessages.appendChild(wrap);
+  studentMessages.scrollTop = studentMessages.scrollHeight;
+  const bar = wrap.querySelector('.progress > span');
+  const pct = wrap.querySelector('.pct');
+  return {
+    update(r) { const p = Math.round(r * 100); setProgress(bar, p); pct.textContent = p + '%'; },
+    finish(blob, fname) {
+      wrap.querySelector('.status').textContent = 'tamamlandı ✓';
+      const url = URL.createObjectURL(blob);
+      const holder = document.createElement('div');
+      if (/^image\//.test(blob.type)) {
+        const img = document.createElement('img'); img.src = url; holder.appendChild(img);
+      } else if (/^video\//.test(blob.type)) {
+        const v = document.createElement('video'); v.src = url; v.controls = true; holder.appendChild(v);
+      }
+      const a = document.createElement('a');
+      a.href = url; a.download = fname; a.className = 'btn success'; a.textContent = '⬇ İndir';
+      holder.appendChild(a);
+      wrap.appendChild(holder);
+    }
+  };
+}
+</script>
+</body>
+</html>

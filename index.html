@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>WTMUG — Ana Ekran</title>
+<meta name="theme-color" content="#6366f1" />
+<link rel="manifest" href="manifest.json" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">WTMUG Birleşik PWA</div>
+    <div class="spacer"></div>
+    <span class="status-dot" id="netDot"></span>
+    <span style="font-size:.8rem;color:var(--muted)" id="netTxt">çevrimdışı</span>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2>👋 Hoş geldin</h2>
+    <p style="color:var(--muted);margin:0;line-height:1.55">
+      Bu PWA iki uygulamayı tek çatı altında birleştirir. Aşağıdan birini seçerek başla.
+      Tüm veriler <strong>P2P</strong> gider — sunucuya asla kaydedilmez.
+    </p>
+  </div>
+
+  <div class="grid">
+    <a class="menu-tile" href="als08/index.html">
+      <span class="emoji">💬</span>
+      <h3>ALŞ08 — Anlık Transfer</h3>
+      <p>Bilgisayar ↔ Telefon arasında QR ile eşleş, anlık mesaj ve dosya gönder/al.</p>
+      <span class="badge">1-1</span>
+    </a>
+
+    <a class="menu-tile" href="als09/index.html">
+      <span class="emoji">📢</span>
+      <h3>ALŞ09 — Toplu Dağıtım</h3>
+      <p>Hoca → Öğrenci(ler) toplu dosya gönderimi, otomatik paylaşım ve log.</p>
+      <span class="badge">1-Çok</span>
+    </a>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>📖 Senaryo (ALŞ10)</h3>
+    <ol style="margin:0;padding-left:20px;color:var(--muted);line-height:1.7;font-size:.9rem">
+      <li>Hoca ALŞ09 → dosya seç → QR göster</li>
+      <li>Öğrenci telefonu ALŞ09 → QR okut → dosyayı indir</li>
+      <li>Öğrenci telefonu ALŞ08/mobile → kendi PC'nin QR'ını okut</li>
+      <li>Öğrenci PC'si ALŞ08 → QR göster → eşleş → dosya telefona/PC'ye aktarılır</li>
+    </ol>
+  </div>
+</div>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+  function refreshNet() {
+    const on = navigator.onLine;
+    document.getElementById('netDot').className = 'status-dot ' + (on ? 'on' : '');
+    document.getElementById('netTxt').textContent = on ? 'çevrimiçi' : 'çevrimdışı';
+  }
+  window.addEventListener('online', refreshNet);
+  window.addEventListener('offline', refreshNet);
+  refreshNet();
+</script>
+</body>
+</html>
